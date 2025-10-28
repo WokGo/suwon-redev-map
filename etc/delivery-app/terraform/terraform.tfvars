@@ -1,0 +1,5 @@
+aws_region   = "ap-northeast-2"
+project_name = "delivery-app"
+instance_type = "t3.small"
+# domain_name   = ""
+# hosted_zone_id = ""

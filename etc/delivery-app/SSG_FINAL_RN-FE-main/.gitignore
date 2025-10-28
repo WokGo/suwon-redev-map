@@ -1,0 +1,19 @@
+node_modules/**/*
+.expo/*
+npm-debug.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+android
+.env
+.idea
+
+# macOS
+.DS_Store
+yarn.lock
+.expo-shared
+.env

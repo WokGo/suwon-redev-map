@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "eco-mileage",
+    "slug": "final-rn-fe",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "updates": {
+      "fallbackToCacheTimeout": 0
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "infoPlist": {
+        "NSCameraUsageDescription": "이 앱에서는 카메라가 필요합니다"
+      },
+      "supportsTablet": true,
+      "bundleIdentifier": "com.hwan515.simplelogintemplate"
+    },
+    "android": {
+      "permissions": ["CAMERA"],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
+      },
+      "package": "com.hwan515.simplelogintemplate"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "webpack"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "b97cebcd-cd67-4b58-bbb9-e2342bce49d4"
+      }
+    }
+  }
+}

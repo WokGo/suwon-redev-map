@@ -1,0 +1,76 @@
+- hosts: web
+  become: true
+  tasks:
+    - name: SSH 접속 가능 여부 대기
+      wait_for_connection:
+        timeout: 120
+
+    - name: 필수 패키지 설치
+      apt:
+        name:
+          - nginx
+          - python3-venv
+          - python3-pip
+        state: present
+        update_cache: true
+
+    - name: Flask app 업로드
+      synchronize:
+        src: "{{ lookup('env','HOME') }}/project_realeaste_map/20251027/backend/"
+        dest: /opt/backend/
+        recursive: yes
+
+    - name: React build 업로드
+      synchronize:
+        src: "{{ lookup('env','HOME') }}/project_realeaste_map/20251027/suwon-redev-map/dist/"
+        dest: /var/www/html/
+        recursive: yes
+
+    - name: Python 가상환경 설정
+      command: python3 -m venv /opt/backend/venv
+
+    - name: Flask requirements 설치
+      command: /opt/backend/venv/bin/pip install -r /opt/backend/requirements.txt
+
+    - name: Gunicorn systemd 서비스 생성
+      copy:
+        dest: /etc/systemd/system/gunicorn.service
+        content: |
+          [Unit]
+          Description=Gunicorn Flask App
+          After=network.target
+
+          [Service]
+          User=ubuntu
+          Group=www-data
+          WorkingDirectory=/opt/backend
+          Environment="PATH=/opt/backend/venv/bin"
+          ExecStart=/opt/backend/venv/bin/gunicorn -w 2 -b 0.0.0.0:5000 app:app
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Gunicorn 서비스 활성화 및 시작
+      systemd:
+        name: gunicorn
+        enabled: true
+        state: restarted
+
+    - name: Nginx 리버스 프록시 설정
+      copy:
+        dest: /etc/nginx/sites-available/default
+        content: |
+          server {
+              listen 80;
+              server_name _;
+              root /var/www/html;
+              index index.html;
+              location /api/ {
+                  proxy_pass http://127.0.0.1:5000/;
+              }
+          }
+
+    - name: Nginx 재시작
+      service:
+        name: nginx
+        state: restarted

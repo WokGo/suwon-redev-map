@@ -1,0 +1,211 @@
+- hosts: web
+  become: yes
+  vars:
+    deploy_root: "{{ lookup('env','HOME') }}/project_realeaste_map/20251027/etc/delivery-app"
+    ssh_args: "-i {{ ansible_ssh_private_key_file }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    backends:
+      - name: delivery-user
+        src: "{{ deploy_root }}/SSG_FINAL_BE-main/"
+        dest: /opt/delivery/user
+        venv: /opt/delivery/user/venv
+        port: 5000
+        wsgi: "app:create_app()"
+      - name: delivery-admin
+        src: "{{ deploy_root }}/SSG_FINAL_Admin-BE-main/"
+        dest: /opt/delivery/admin
+        venv: /opt/delivery/admin/venv
+        port: 5001
+        wsgi: "app:app"
+    frontends:
+      - name: customer
+        src: "{{ deploy_root }}/SSG_FINAL_RN-FE-main/web-build/"
+        dest: /var/www/delivery/customer
+      - name: admin
+        src: "{{ deploy_root }}/SSG_FINAL_Admin-FE-main/build/"
+        dest: /var/www/delivery/admin
+  tasks:
+    - name: 필수 패키지 설치
+      apt:
+        name:
+          - nginx
+          - python3-venv
+          - python3-pip
+          - git
+          - curl
+          - rsync
+          - build-essential
+          - libpq-dev
+          - python3-dev
+        state: present
+        update_cache: yes
+
+    - name: Node.js 20 설치 (Nodesource)
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt-get install -y nodejs
+      args:
+        creates: /usr/bin/node
+        executable: /bin/bash
+
+    - name: 백엔드 루트 디렉토리 생성
+      file:
+        path: "{{ item.dest }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+      loop: "{{ backends }}"
+
+    - name: 백엔드 코드 동기화
+      synchronize:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}/"
+        rsync_opts:
+          - "--delete"
+          - "--exclude=venv/"
+          - "--exclude=.venv/"
+        ssh_args: "{{ ssh_args }}"
+      delegate_to: localhost
+      become: no
+      loop: "{{ backends }}"
+
+    - name: admin 백엔드 SSH 키 권한 설정
+      file:
+        path: "{{ item.dest }}/route/adminBE.pem"
+        state: file
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"
+      loop: "{{ backends }}"
+      when: item.name == "delivery-admin"
+
+    - name: 기존 가상환경 제거
+      file:
+        path: "{{ item.venv }}"
+        state: absent
+      loop: "{{ backends }}"
+
+    - name: 백엔드 가상환경 및 의존성 설치
+      shell: |
+        set -euo pipefail
+        python3 -m venv {{ item.venv }}
+        {{ item.venv }}/bin/pip install --upgrade pip --break-system-packages
+        {{ item.venv }}/bin/pip install -r {{ item.dest }}/requirements.txt --break-system-packages
+      args:
+        executable: /bin/bash
+      loop: "{{ backends }}"
+      become_user: ubuntu
+
+    - name: 프론트 루트 디렉토리 생성
+      file:
+        path: "{{ item.dest }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: "0755"
+      loop: "{{ frontends }}"
+
+    - name: 프론트 산출물 동기화
+      synchronize:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}/"
+        rsync_opts:
+          - "--delete"
+          - "--chown=www-data:www-data"
+        ssh_args: "{{ ssh_args }}"
+      delegate_to: localhost
+      become: no
+      loop: "{{ frontends }}"
+
+    - name: 프론트 디렉토리 권한 보정
+      file:
+        path: "{{ item.dest }}"
+        owner: www-data
+        group: www-data
+        recurse: yes
+        state: directory
+      loop: "{{ frontends }}"
+
+    - name: 백엔드 systemd 서비스 생성
+      copy:
+        dest: "/etc/systemd/system/{{ item.name }}.service"
+        content: |
+          [Unit]
+          Description={{ item.name }} service
+          After=network.target
+
+          [Service]
+          User=ubuntu
+          Group=ubuntu
+          WorkingDirectory={{ item.dest }}
+          Environment="PATH={{ item.venv }}/bin"
+          Environment="PYTHONUNBUFFERED=1"
+          ExecStart={{ item.venv }}/bin/gunicorn -w 2 -b 127.0.0.1:{{ item.port }} "{{ item.wsgi }}"
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+      loop: "{{ backends }}"
+      notify: reload systemd
+
+    - name: 백엔드 서비스 활성화
+      systemd:
+        name: "{{ item.name }}"
+        enabled: yes
+        state: restarted
+      loop: "{{ backends }}"
+
+    - name: Nginx 서버블록 구성
+      copy:
+        dest: /etc/nginx/sites-available/default
+        content: |
+          server {
+            listen 80 default_server;
+            listen [::]:80 default_server;
+            server_name _;
+            client_max_body_size 20m;
+
+            location /api/ {
+              proxy_pass http://127.0.0.1:5000/;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+            }
+
+            location /admin/api/ {
+              proxy_pass http://127.0.0.1:5001/;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+            }
+
+            location = /admin {
+              return 302 /admin/;
+            }
+
+            location /admin/ {
+              alias /var/www/delivery/admin/;
+              index index.html;
+              try_files $uri $uri/ /admin/index.html;
+            }
+
+            location / {
+              root /var/www/delivery/customer;
+              index index.html;
+              try_files $uri $uri/ /index.html;
+            }
+          }
+      notify: restart nginx
+
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: restart nginx
+      service:
+        name: nginx
+        state: restarted
+        enabled: yes
