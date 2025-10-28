@@ -7,6 +7,32 @@
         state: present
         update_cache: yes
 
+- hosts: admin_fe
+  become: yes
+  vars:
+    ssh_args: "-i {{ ansible_ssh_private_key_file }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+  tasks:
+    - name: Create staging directory for backend code
+      file: { path: "/tmp/project_staging", state: directory, owner: ubuntu, group: ubuntu, mode: "0755" }
+
+    - name: Sync Admin BE code to Admin FE staging
+      synchronize:
+        src: "{{ lookup('env','HOME') }}/project_realeaste_map/20251027/etc/delivery-app/SSG_FINAL_Admin-BE-main/"
+        dest: "/tmp/project_staging/SSG_FINAL_Admin-BE-main/"
+        rsync_opts: [--delete, --exclude=venv/, --exclude=.venv/]
+        ssh_args: "{{ ssh_args }}"
+      delegate_to: localhost
+      become: no
+
+    - name: Sync Main BE code to Admin FE staging
+      synchronize:
+        src: "{{ lookup('env','HOME') }}/project_realeaste_map/20251027/etc/delivery-app/SSG_FINAL_BE-main/"
+        dest: "/tmp/project_staging/SSG_FINAL_BE-main/"
+        rsync_opts: [--delete, --exclude=venv/, --exclude=.venv/]
+        ssh_args: "{{ ssh_args }}"
+      delegate_to: localhost
+      become: no
+
 - hosts: admin_be, main_be
   become: yes
   vars:
@@ -23,18 +49,23 @@
     - name: 백엔드 루트 디렉토리 생성
       file: { path: "{{ be_vars.dest }}", state: directory, owner: ubuntu, group: ubuntu, mode: "0755" }
 
-    - name: 백엔드 코드 동기화
-      synchronize:
-        src: "{{ lookup('env','HOME') }}/project_realeaste_map/20251027/etc/delivery-app/{{ be_vars.src_dir }}/"
-        dest: "{{ be_vars.dest }}/"
-        rsync_opts:
-          - "--delete"
-          - "--exclude=venv/"
-          - "--exclude=.venv/"
-          - "-e"
-          - "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand='ssh -W %h:%p -i {{ ansible_ssh_private_key_file }} {{ ansible_user }}@{{ groups.admin_fe[0] }}' -i {{ ansible_ssh_private_key_file }}"
-      delegate_to: localhost
-      become: no
+    - name: SSH 프라이빗 키를 백엔드 인스턴스로 복사
+      copy:
+        src: "{{ ansible_ssh_private_key_file }}"
+        dest: "/home/ubuntu/.ssh/id_delivery-app"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"
+
+    - name: 백엔드 코드 동기화 (Pull from Staging on Admin FE)
+      shell: >
+        rsync -avz --delete --exclude=venv/ --exclude=.venv/
+        -e 'ssh -o StrictHostKeyChecking=no -i /home/ubuntu/.ssh/id_delivery-app'
+        {{ ansible_user }}@{{ admin_fe_private_ip }}:/tmp/project_staging/{{ be_vars.src_dir }}/
+        {{ be_vars.dest }}/
+      args:
+        chdir: "{{ be_vars.dest }}"
+      become: yes
 
     - name: admin 백엔드 SSH 키 권한 설정
       file: { path: "{{ be_vars.dest }}/route/adminBE.pem", state: file, owner: ubuntu, group: ubuntu, mode: "0600" }
