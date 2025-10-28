@@ -9,3 +9,10 @@ node_modules/
 dist/
 terraform/*.tfstate*
 terraform/id_*
+.terraform/
+**/.terraform/
+backend/*.db
+terraform/*.tfvars
+terraform/*.tfvars.json
+terraform/*.auto.tfvars
+terraform/*.auto.tfvars.json

@@ -1,0 +1,8 @@
+db_password           = "CHANGE_ME_MASTER"
+app_db_username       = "suwon_app"
+app_db_password       = "CHANGE_ME_APP"
+db_backup_retention   = 7
+enable_enhanced_monitoring = true
+db_cpu_alarm_threshold      = 70
+db_free_storage_threshold_mb = 2048
+cloudwatch_alarm_actions    = []

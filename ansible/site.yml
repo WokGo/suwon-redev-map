@@ -1,46 +1,112 @@
-- hosts: web
+- hosts: frontend
   become: yes
   vars:
-    app_root: /opt/app
     web_root: /var/www/html
+    backend_api_host: "{{ backend_private_ip | default('127.0.0.1') }}"
   tasks:
-    - name: 기본 패키지
+    - name: 필수 패키지 설치 (Nginx)
       apt:
         name:
           - nginx
-          - python3-venv
-          - python3-pip
-          - git
-          - curl
         update_cache: yes
         state: present
 
-    - name: Node.js 20 설치 (Nodesource)
-      shell: |
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
-
-    - name: Flask 앱 디렉토리 생성
-      file: { path: "{{ app_root }}", state: directory, owner: ubuntu, group: ubuntu, mode: '0755' }
-
-    - name: 프론트 정적 디렉토리 생성
-      file: { path: "{{ web_root }}", state: directory, owner: www-data, group: www-data, mode: '0755' }
-
-    - name: 웹 루트 임시 권한 부여
+    - name: React 정적 디렉토리 생성
       file:
         path: "{{ web_root }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: "0755"
+
+    - name: 기존 Nginx 기본 사이트 비활성화
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: React 빌드 산출물 업로드
+      synchronize:
+        src: "{{ lookup('env','DEPLOY_ROOT') }}/suwon-redev-map/dist/"
+        dest: "{{ web_root }}/"
+        rsync_opts:
+          - "--delete"
+          - "--chown=www-data:www-data"
+        ssh_args: "-i {{ lookup('env','DEPLOY_SSH_KEY') }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+      delegate_to: localhost
+      become: no
+
+    - name: 프록시 환경 설정
+      copy:
+        dest: /etc/nginx/sites-available/frontend.conf
+        content: |
+          server {
+            listen 80 default_server;
+            server_name _;
+            root {{ web_root }};
+            index index.html;
+
+            location /api/ {
+              proxy_pass http://{{ backend_api_host }}:5000/;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            }
+
+            location / {
+              try_files $uri /index.html;
+            }
+          }
+
+    - name: 사이트 활성화
+      file:
+        src: /etc/nginx/sites-available/frontend.conf
+        dest: /etc/nginx/sites-enabled/frontend.conf
+        state: link
+
+    - name: Nginx 재시작
+      service:
+        name: nginx
+        state: restarted
+        enabled: yes
+
+- hosts: backend
+  become: yes
+  vars:
+    app_root: /opt/backend
+    python_bin: /opt/backend/venv/bin
+    database_url: >-
+      {{ lookup('env','DEPLOY_DATABASE_URL') | default(
+          (rds_endpoint | default('') | length > 0)
+            | ternary('postgresql+psycopg2://' ~ app_db_username ~ ':' ~ app_db_password ~ '@' ~ rds_endpoint ~ '/' ~ rds_database,
+                      'sqlite:////opt/backend/app.db'),
+          true) }}
+  tasks:
+    - name: 필수 패키지 설치
+      apt:
+        name:
+          - python3-venv
+          - python3-pip
+          - postgresql-client
+        update_cache: yes
+        state: present
+
+    - name: Flask 앱 디렉토리 생성
+      file:
+        path: "{{ app_root }}"
+        state: directory
         owner: ubuntu
         group: ubuntu
-        recurse: yes
+        mode: "0755"
 
     - name: 로컬 Flask 백엔드 업로드
       synchronize:
-        src: "{{ lookup('env','HOME') }}/project_realeaste_map/20251027/backend/"
+        src: "{{ lookup('env','DEPLOY_ROOT') }}/backend/"
         dest: "{{ app_root }}/"
         rsync_opts:
           - "--delete"
           - "--exclude=venv/"
           - "--exclude=.venv/"
-        ssh_args: "-i {{ lookup('env','HOME') }}/project_realeaste_map/20251027/terraform/id_suwon-redev -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        ssh_args: "-i {{ lookup('env','DEPLOY_SSH_KEY') }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
       delegate_to: localhost
       become: no
 
@@ -56,34 +122,58 @@
         path: "{{ app_root }}/venv"
         state: absent
 
-    - name: 가상환경/의존성 설치
+    - name: 가상환경 재구축 및 의존성 설치
       shell: |
         python3 -m venv {{ app_root }}/venv
-        {{ app_root }}/venv/bin/pip install --upgrade pip --break-system-packages
-        {{ app_root }}/venv/bin/pip install -r {{ app_root }}/requirements.txt --break-system-packages
+        {{ python_bin }}/pip install --upgrade pip
+        {{ python_bin }}/pip install -r {{ app_root }}/requirements.txt
+      args:
+        executable: /bin/bash
       become_user: ubuntu
 
-    - name: React 빌드 산출물 업로드
-      synchronize:
-        src: "{{ lookup('env','HOME') }}/project_realeaste_map/20251027/suwon-redev-map/dist/"
-        dest: "{{ web_root }}/"
-        rsync_opts:
-          - "--delete"
-          - "--chown=www-data:www-data"
-        ssh_args: "-i {{ lookup('env','HOME') }}/project_realeaste_map/20251027/terraform/id_suwon-redev -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-      delegate_to: localhost
-      become: no
+    - name: 애플리케이션 DB 사용자 생성 및 권한 부여
+      shell: |
+        psql -h {{ rds_endpoint }} -p {{ rds_port | default(5432) }} -U {{ rds_username }} -d {{ rds_database }} <<'SQL'
+        DO $$
+        BEGIN
+          IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ app_db_username }}') THEN
+            CREATE ROLE "{{ app_db_username }}" LOGIN PASSWORD '{{ app_db_password }}';
+          ELSE
+            ALTER ROLE "{{ app_db_username }}" WITH PASSWORD '{{ app_db_password }}';
+          END IF;
+        END $$;
+        GRANT CONNECT ON DATABASE "{{ rds_database }}" TO "{{ app_db_username }}";
+        GRANT CREATE ON DATABASE "{{ rds_database }}" TO "{{ app_db_username }}";
+        GRANT USAGE, CREATE ON SCHEMA public TO "{{ app_db_username }}";
+        GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "{{ app_db_username }}";
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public
+          GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "{{ app_db_username }}";
+        SQL
+      args:
+        executable: /bin/bash
+      environment:
+        PGPASSWORD: "{{ rds_password }}"
+      register: create_app_user
+      retries: 10
+      delay: 20
+      until: create_app_user.rc == 0
+      when:
+        - rds_endpoint != ""
+        - rds_username != ""
 
-    - name: 웹 루트 권한 원복
-      file:
-        path: "{{ web_root }}"
-        owner: www-data
-        group: www-data
-        recurse: yes
-
-    - name: systemd 서비스 파일 생성 (gunicorn)
+    - name: 백엔드 환경 변수 파일 생성
       copy:
-        dest: /etc/systemd/system/app.service
+        dest: "{{ app_root }}/.env"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0640"
+        content: |
+          FLASK_ENV=production
+          DATABASE_URL={{ database_url }}
+
+    - name: Gunicorn systemd 서비스 생성
+      copy:
+        dest: /etc/systemd/system/backend.service
         content: |
           [Unit]
           Description=Gunicorn Flask App
@@ -93,39 +183,18 @@
           User=ubuntu
           Group=ubuntu
           WorkingDirectory={{ app_root }}
-          Environment="PATH={{ app_root }}/venv/bin"
-          ExecStart={{ app_root }}/venv/bin/gunicorn -w 2 -b 127.0.0.1:5000 app:app
+          Environment="PATH={{ python_bin }}:/usr/bin"
+          EnvironmentFile={{ app_root }}/.env
+          ExecStart={{ python_bin }}/gunicorn -w 2 -b 0.0.0.0:5000 app:app
           Restart=always
 
           [Install]
           WantedBy=multi-user.target
-      notify: [ "restart app" ]
-
-    - name: Nginx 서버블록
-      copy:
-        dest: /etc/nginx/sites-available/default
-        content: |
-          server {
-            listen 80 default_server;
-            server_name _;
-            root {{ web_root }};
-            index index.html;
-
-            location /api/ {
-              proxy_pass http://127.0.0.1:5000/;
-              proxy_set_header Host $host;
-              proxy_set_header X-Real-IP $remote_addr;
-            }
-
-            location / {
-              try_files $uri /index.html;
-            }
-          }
-      notify: [ "restart nginx" ]
+      notify: restart backend
 
   handlers:
-    - name: restart nginx
-      service: { name: nginx, state: restarted, enabled: yes }
-
-    - name: restart app
-      systemd: { name: app, state: restarted, enabled: yes }
+    - name: restart backend
+      systemd:
+        name: backend.service
+        state: restarted
+        enabled: yes
