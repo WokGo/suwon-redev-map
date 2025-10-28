@@ -28,6 +28,7 @@
       synchronize:
         src: "{{ lookup('env','DEPLOY_ROOT') }}/suwon-redev-map/dist/"
         dest: "{{ web_root }}/"
+        rsync_path: "sudo rsync"
         rsync_opts:
           - "--delete"
           - "--chown=www-data:www-data"
@@ -46,7 +47,7 @@
             index index.html;
 
             location /api/ {
-              proxy_pass http://{{ backend_api_host }}:5000/;
+              proxy_pass http://{{ backend_api_host }}:5000;
               proxy_set_header Host $host;
               proxy_set_header X-Real-IP $remote_addr;
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -74,10 +75,13 @@
   vars:
     app_root: /opt/backend
     python_bin: /opt/backend/venv/bin
+    rds_endpoint_parts: "{{ (rds_endpoint | default('')) | split(':') }}"
+    rds_host_for_backend: "{{ rds_endpoint_parts[0] }}"
+    rds_port_for_backend: "{{ (rds_endpoint_parts | length > 1) | ternary(rds_endpoint_parts[1], (rds_port | default(5432))) }}"
     database_url: >-
       {{ lookup('env','DEPLOY_DATABASE_URL') | default(
           (rds_endpoint | default('') | length > 0)
-            | ternary('postgresql+psycopg2://' ~ app_db_username ~ ':' ~ app_db_password ~ '@' ~ rds_endpoint ~ '/' ~ rds_database,
+            | ternary('postgresql+psycopg2://' ~ app_db_username ~ ':' ~ app_db_password ~ '@' ~ rds_host_for_backend ~ ':' ~ rds_port_for_backend ~ '/' ~ rds_database,
                       'sqlite:////opt/backend/app.db'),
           true) }}
   tasks:
@@ -133,7 +137,7 @@
 
     - name: 애플리케이션 DB 사용자 생성 및 권한 부여
       shell: |
-        psql -h {{ rds_endpoint }} -p {{ rds_port | default(5432) }} -U {{ rds_username }} -d {{ rds_database }} <<'SQL'
+        psql -h {{ rds_host_for_backend }} -p {{ rds_port_for_backend }} -U {{ rds_username }} -d {{ rds_database }} <<'SQL'
         DO $$
         BEGIN
           IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ app_db_username }}') THEN

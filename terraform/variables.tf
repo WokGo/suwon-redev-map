@@ -40,7 +40,7 @@ variable "db_engine" {
 variable "db_engine_version" {
   description = "Version of the database engine."
   type        = string
-  default     = "15.5"
+  default     = ""
 }
 
 variable "app_db_username" {

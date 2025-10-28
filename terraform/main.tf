@@ -276,7 +276,7 @@ resource "aws_db_instance" "app" {
   count                           = var.enable_rds ? 1 : 0
   identifier                      = "${var.project_name}-db"
   engine                          = var.db_engine
-  engine_version                  = var.db_engine_version
+  engine_version                  = var.db_engine_version != "" ? var.db_engine_version : null
   instance_class                  = var.db_instance_class
   allocated_storage               = var.db_allocated_storage
   storage_type                    = "gp3"

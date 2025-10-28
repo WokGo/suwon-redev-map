@@ -1,6 +1,7 @@
-db_password           = "CHANGE_ME_MASTER"
+# RDS master password must exclude '/', '@', '\"', and spaces.
+db_password           = "CHANGE_ME_Master123!"
 app_db_username       = "suwon_app"
-app_db_password       = "CHANGE_ME_APP"
+app_db_password       = "CHANGE_ME_App123!"
 db_backup_retention   = 7
 enable_enhanced_monitoring = true
 db_cpu_alarm_threshold      = 70

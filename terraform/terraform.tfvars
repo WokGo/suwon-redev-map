@@ -1,5 +1,8 @@
-aws_region    = "ap-northeast-2"
-project_name  = "suwon-redev"
-instance_type = "t3.micro"
-# domain_name = ""         # 예: map.example.com (있으면 주석 해제하고 값 입력)
-# hosted_zone_id = ""      # 예: Z123456ABCDEF    (있으면 주석 해제하고 값 입력)
+db_password           = "SuwonMaster!234"
+app_db_username       = "suwon"
+app_db_password       = "SuwonApp!234"
+db_backup_retention   = 7
+enable_enhanced_monitoring = true
+db_cpu_alarm_threshold      = 70
+db_free_storage_threshold_mb = 2048
+cloudwatch_alarm_actions    = []

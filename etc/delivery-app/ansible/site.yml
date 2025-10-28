@@ -1,43 +1,95 @@
-- hosts: web
+- hosts: all
   become: yes
-  vars:
-    deploy_root: "{{ lookup('env','HOME') }}/project_realeaste_map/20251027/etc/delivery-app"
-    ssh_args: "-i {{ ansible_ssh_private_key_file }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-    backends:
-      - name: delivery-user
-        src: "{{ deploy_root }}/SSG_FINAL_BE-main/"
-        dest: /opt/delivery/user
-        venv: /opt/delivery/user/venv
-        port: 5000
-        wsgi: "app:create_app()"
-      - name: delivery-admin
-        src: "{{ deploy_root }}/SSG_FINAL_Admin-BE-main/"
-        dest: /opt/delivery/admin
-        venv: /opt/delivery/admin/venv
-        port: 5001
-        wsgi: "app:app"
-    frontends:
-      - name: customer
-        src: "{{ deploy_root }}/SSG_FINAL_RN-FE-main/web-build/"
-        dest: /var/www/delivery/customer
-      - name: admin
-        src: "{{ deploy_root }}/SSG_FINAL_Admin-FE-main/build/"
-        dest: /var/www/delivery/admin
   tasks:
-    - name: 필수 패키지 설치
+    - name: 필수 공통 패키지 설치
       apt:
-        name:
-          - nginx
-          - python3-venv
-          - python3-pip
-          - git
-          - curl
-          - rsync
-          - build-essential
-          - libpq-dev
-          - python3-dev
+        name: [git, curl, rsync, python3-venv, python3-pip, build-essential, libpq-dev, python3-dev]
         state: present
         update_cache: yes
+
+- hosts: admin_be, main_be
+  become: yes
+  vars:
+    ssh_args: "-i {{ ansible_ssh_private_key_file }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+  tasks:
+    - name: Set backend variables
+      set_fact:
+        be_vars: "{{ item }}"
+      loop:
+        - { name: delivery-admin, src_dir: 'SSG_FINAL_Admin-BE-main', dest: /opt/delivery/admin, venv: /opt/delivery/admin/venv, port: 5001, wsgi: 'app:app', group: 'admin_be' }
+        - { name: delivery-user, src_dir: 'SSG_FINAL_BE-main', dest: /opt/delivery/user, venv: /opt/delivery/user/venv, port: 5000, wsgi: 'app:create_app()', group: 'main_be' }
+      when: "inventory_hostname in groups[item.group]"
+
+    - name: 백엔드 루트 디렉토리 생성
+      file: { path: "{{ be_vars.dest }}", state: directory, owner: ubuntu, group: ubuntu, mode: "0755" }
+
+    - name: 백엔드 코드 동기화
+      synchronize:
+        src: "{{ lookup('env','HOME') }}/project_realeaste_map/20251027/etc/delivery-app/{{ be_vars.src_dir }}/"
+        dest: "{{ be_vars.dest }}/"
+        rsync_opts:
+          - "--delete"
+          - "--exclude=venv/"
+          - "--exclude=.venv/"
+          - "-e"
+          - "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand='ssh -W %h:%p -i {{ ansible_ssh_private_key_file }} {{ ansible_user }}@{{ groups.admin_fe[0] }}' -i {{ ansible_ssh_private_key_file }}"
+      delegate_to: localhost
+      become: no
+
+    - name: admin 백엔드 SSH 키 권한 설정
+      file: { path: "{{ be_vars.dest }}/route/adminBE.pem", state: file, owner: ubuntu, group: ubuntu, mode: "0600" }
+      when: "be_vars.name == 'delivery-admin'"
+
+    - name: 기존 가상환경 제거
+      file: { path: "{{ be_vars.venv }}", state: absent }
+
+    - name: 백엔드 가상환경 및 의존성 설치
+      shell: |
+        set -euo pipefail
+        python3 -m venv {{ be_vars.venv }}
+        {{ be_vars.venv }}/bin/pip install --upgrade pip --break-system-packages
+        {{ be_vars.venv }}/bin/pip install -r {{ be_vars.dest }}/requirements.txt --break-system-packages
+      args: { executable: /bin/bash }
+      become_user: ubuntu
+
+    - name: 백엔드 systemd 서비스 생성
+      copy:
+        dest: "/etc/systemd/system/{{ be_vars.name }}.service"
+        content: |
+          [Unit]
+          Description={{ be_vars.name }} service
+          After=network.target
+          [Service]
+          User=ubuntu
+          Group=ubuntu
+          WorkingDirectory={{ be_vars.dest }}
+          Environment="PATH={{ be_vars.venv }}/bin"
+          Environment="PYTHONUNBUFFERED=1"
+          ExecStart={{ be_vars.venv }}/bin/gunicorn -w 2 -b 0.0.0.0:{{ be_vars.port }} "{{ be_vars.wsgi }}"
+          Restart=always
+          [Install]
+          WantedBy=multi-user.target
+      notify: reload systemd
+
+    - name: 백엔드 서비스 활성화
+      systemd: { name: "{{ be_vars.name }}", enabled: yes, state: restarted }
+
+  handlers:
+    - name: reload systemd
+      systemd: { daemon_reload: yes }
+
+- hosts: admin_fe, customer_fe
+  become: yes
+  vars:
+    ssh_args: "-i {{ ansible_ssh_private_key_file }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+  tasks:
+    - name: Set frontend variables
+      set_fact:
+        fe_vars: "{{ item }}"
+      loop:
+        - { group: 'admin_fe', src_dir: 'SSG_FINAL_Admin-FE-main/build', dest: /var/www/delivery/admin, be_ip: "{{ admin_be_private_ip }}", be_port: 5001, api_path: '/admin/api/' }
+        - { group: 'customer_fe', src_dir: 'SSG_FINAL_RN-FE-main/web-build', dest: /var/www/delivery/customer, be_ip: "{{ main_be_private_ip }}", be_port: 5000, api_path: '/api/' }
+      when: "inventory_hostname in groups[item.group]"
 
     - name: Node.js 20 설치 (Nodesource)
       shell: |
@@ -45,115 +97,21 @@
         apt-get install -y nodejs
       args:
         creates: /usr/bin/node
-        executable: /bin/bash
 
-    - name: 백엔드 루트 디렉토리 생성
-      file:
-        path: "{{ item.dest }}"
-        state: directory
-        owner: ubuntu
-        group: ubuntu
-        mode: "0755"
-      loop: "{{ backends }}"
-
-    - name: 백엔드 코드 동기화
-      synchronize:
-        src: "{{ item.src }}"
-        dest: "{{ item.dest }}/"
-        rsync_opts:
-          - "--delete"
-          - "--exclude=venv/"
-          - "--exclude=.venv/"
-        ssh_args: "{{ ssh_args }}"
-      delegate_to: localhost
-      become: no
-      loop: "{{ backends }}"
-
-    - name: admin 백엔드 SSH 키 권한 설정
-      file:
-        path: "{{ item.dest }}/route/adminBE.pem"
-        state: file
-        owner: ubuntu
-        group: ubuntu
-        mode: "0600"
-      loop: "{{ backends }}"
-      when: item.name == "delivery-admin"
-
-    - name: 기존 가상환경 제거
-      file:
-        path: "{{ item.venv }}"
-        state: absent
-      loop: "{{ backends }}"
-
-    - name: 백엔드 가상환경 및 의존성 설치
-      shell: |
-        set -euo pipefail
-        python3 -m venv {{ item.venv }}
-        {{ item.venv }}/bin/pip install --upgrade pip --break-system-packages
-        {{ item.venv }}/bin/pip install -r {{ item.dest }}/requirements.txt --break-system-packages
-      args:
-        executable: /bin/bash
-      loop: "{{ backends }}"
-      become_user: ubuntu
+    - name: Nginx 설치
+      apt: { name: nginx, state: present }
 
     - name: 프론트 루트 디렉토리 생성
-      file:
-        path: "{{ item.dest }}"
-        state: directory
-        owner: www-data
-        group: www-data
-        mode: "0755"
-      loop: "{{ frontends }}"
+      file: { path: "{{ fe_vars.dest }}", state: directory, owner: www-data, group: www-data, mode: "0755" }
 
     - name: 프론트 산출물 동기화
       synchronize:
-        src: "{{ item.src }}"
-        dest: "{{ item.dest }}/"
-        rsync_opts:
-          - "--delete"
-          - "--chown=www-data:www-data"
+        src: "{{ lookup('env','HOME') }}/project_realeaste_map/20251027/etc/delivery-app/{{ fe_vars.src_dir }}/"
+        dest: "{{ fe_vars.dest }}/"
+        rsync_opts: [--delete, --chown=www-data:www-data]
         ssh_args: "{{ ssh_args }}"
       delegate_to: localhost
       become: no
-      loop: "{{ frontends }}"
-
-    - name: 프론트 디렉토리 권한 보정
-      file:
-        path: "{{ item.dest }}"
-        owner: www-data
-        group: www-data
-        recurse: yes
-        state: directory
-      loop: "{{ frontends }}"
-
-    - name: 백엔드 systemd 서비스 생성
-      copy:
-        dest: "/etc/systemd/system/{{ item.name }}.service"
-        content: |
-          [Unit]
-          Description={{ item.name }} service
-          After=network.target
-
-          [Service]
-          User=ubuntu
-          Group=ubuntu
-          WorkingDirectory={{ item.dest }}
-          Environment="PATH={{ item.venv }}/bin"
-          Environment="PYTHONUNBUFFERED=1"
-          ExecStart={{ item.venv }}/bin/gunicorn -w 2 -b 127.0.0.1:{{ item.port }} "{{ item.wsgi }}"
-          Restart=always
-
-          [Install]
-          WantedBy=multi-user.target
-      loop: "{{ backends }}"
-      notify: reload systemd
-
-    - name: 백엔드 서비스 활성화
-      systemd:
-        name: "{{ item.name }}"
-        enabled: yes
-        state: restarted
-      loop: "{{ backends }}"
 
     - name: Nginx 서버블록 구성
       copy:
@@ -161,38 +119,19 @@
         content: |
           server {
             listen 80 default_server;
-            listen [::]:80 default_server;
             server_name _;
             client_max_body_size 20m;
 
-            location /api/ {
-              proxy_pass http://127.0.0.1:5000/;
+            location {{ fe_vars.api_path }} {
+              proxy_pass http://{{ fe_vars.be_ip }}:{{ fe_vars.be_port }}/;
               proxy_set_header Host $host;
               proxy_set_header X-Real-IP $remote_addr;
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto $scheme;
-            }
-
-            location /admin/api/ {
-              proxy_pass http://127.0.0.1:5001/;
-              proxy_set_header Host $host;
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-            }
-
-            location = /admin {
-              return 302 /admin/;
-            }
-
-            location /admin/ {
-              alias /var/www/delivery/admin/;
-              index index.html;
-              try_files $uri $uri/ /admin/index.html;
             }
 
             location / {
-              root /var/www/delivery/customer;
+              root {{ fe_vars.dest }};
               index index.html;
               try_files $uri $uri/ /index.html;
             }
@@ -200,12 +139,6 @@
       notify: restart nginx
 
   handlers:
-    - name: reload systemd
-      systemd:
-        daemon_reload: yes
-
     - name: restart nginx
-      service:
-        name: nginx
-        state: restarted
-        enabled: yes
+      service: { name: nginx, state: restarted, enabled: yes }
+
