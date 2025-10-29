@@ -71,7 +71,7 @@ if [[ -z "$FRONTEND_IP" || -z "$BACKEND_IP" ]]; then
   exit 1
 fi
 
-APP_DATABASE_URL="postgresql+psycopg2://${APP_DB_USERNAME}:${APP_DB_PASSWORD}@${RDS_ENDPOINT}/${RDS_DATABASE}"
+APP_DATABASE_URL="postgresql+psycopg2://${APP_DB_USERNAME}:${APP_DB_PASSWORD}@${RDS_ENDPOINT}/${RDS_DATABASE}?sslmode=require"
 
 echo "==> React 빌드 (로컬)"
 (

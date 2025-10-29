@@ -157,6 +157,7 @@
         executable: /bin/bash
       environment:
         PGPASSWORD: "{{ rds_password }}"
+        PGSSLMODE: require
       register: create_app_user
       retries: 10
       delay: 20

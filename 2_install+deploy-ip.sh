@@ -85,8 +85,8 @@ if [[ -z "$FRONTEND_IP" || -z "$BACKEND_IP" ]]; then
 fi
 
 SSH_KEY=$(realpath "$SSH_KEY_REL")
-DATABASE_URL="postgresql+psycopg2://${RDS_USERNAME}:${DB_PASSWORD}@${RDS_ENDPOINT}/${RDS_DATABASE}"
-APP_DATABASE_URL="postgresql+psycopg2://${APP_DB_USERNAME}:${APP_DB_PASSWORD}@${RDS_ENDPOINT}/${RDS_DATABASE}"
+DATABASE_URL="postgresql+psycopg2://${RDS_USERNAME}:${DB_PASSWORD}@${RDS_ENDPOINT}/${RDS_DATABASE}?sslmode=require"
+APP_DATABASE_URL="postgresql+psycopg2://${APP_DB_USERNAME}:${APP_DB_PASSWORD}@${RDS_ENDPOINT}/${RDS_DATABASE}?sslmode=require"
 
 echo "=== [4] Ansible 인벤토리 생성 ==="
 cd "$ROOT"
